@@ -160,6 +160,8 @@ def add_gripper(root, side, cfg):
         element(joint, 'axis', xyz=f'{sign} 0 0')
         element(joint, 'limit', lower=0, upper=0.05, effort=100, velocity=0.10)
         element(joint, 'dynamics', damping=15.0, friction=0.40)
+        if index == 1:
+            element(joint, 'mimic', joint=p + 'left_finger_joint', multiplier=1.0, offset=0.0)
         surface = element(root, 'gazebo', reference=link_name)
         element(surface, 'selfCollide').text = 'false'
         for tag, value in (('mu1', 0.35), ('mu2', 0.35), ('kp', 30000), ('kd', 80)):
@@ -391,15 +393,16 @@ def build_model(share, scene_path, arms, mode='gazebo', controller_file='', hard
                 gripper_joints = finger_joints
             else:
                 arm_plugin = 'fairino_hardware/FairinoHardwareInterface'
-                # TODO: the real HKV gripper is mounted on the FR3 and driven via
-                # the Fairino SDK (ActGripper/MoveGripper/GetGripperCurPosition).
-                # Implement fairino_hardware/FairinoGripperHardwareInterface in
-                # third_party.  Until then use GenericSystem so the real launch
-                # can still start and expose the 6-axis arm state.
-                gripper_plugin = 'mock_components/GenericSystem'
+                gripper_plugin = 'fairino_hardware/FairinoGripperHardwareInterface'
                 arm_params = {'robot_ip': hardware[side]['robot_ip']}
-                gripper_params = None
-                gripper_joints = finger_joints
+                gripper_params = {
+                    'robot_ip': hardware[side]['robot_ip'],
+                    'gripper_index': hardware[side]['gripper_index'],
+                    **hardware['gripper'],
+                    'open_gap': arms['gripper']['open_gap'],
+                    'finger_travel': arms['gripper']['finger_travel'],
+                }
+                gripper_joints = [f'{side}_left_finger_joint']
             control(root, side + '_arm_system', arm_plugin, arm_joints,
                     initial if mode == 'mock' else None, arm_params)
             control(root, side + '_gripper_system', gripper_plugin, gripper_joints,
