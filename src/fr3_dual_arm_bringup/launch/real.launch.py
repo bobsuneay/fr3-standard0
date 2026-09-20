@@ -2,10 +2,10 @@ from pathlib import Path
 import tempfile
 import xml.etree.ElementTree as ET
 
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_share_directory, get_packages_with_prefixes
 from launch import LaunchDescription
-from launch.actions import (DeclareLaunchArgument, EmitEvent, OpaqueFunction,
-                            RegisterEventHandler)
+from launch.actions import (DeclareLaunchArgument, EmitEvent, ExecuteProcess, LogInfo,
+                            OpaqueFunction, RegisterEventHandler)
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit, OnShutdown
 from launch.events import Shutdown
@@ -22,8 +22,24 @@ from fr3_dual_arm_description.model import (
 def start(context):
     description_share = Path(get_package_share_directory('fr3_dual_arm_description'))
     arg = lambda name: LaunchConfiguration(name).perform(context)
+    if arg('enable_execution') not in ('true', 'false'):
+        raise ValueError('enable_execution must be true or false')
     enable_execution = arg('enable_execution') == 'true'
     hardware = validate_hardware(read_yaml(Path(arg('hardware')).expanduser()))
+    required = {'fairino_hardware/FairinoHardwareInterface',
+                'fairino_hardware/FairinoGripperHardwareInterface'}
+    exporters = {}
+    for package in get_packages_with_prefixes():
+        if package.startswith('fairino_hardware'):
+            manifest = Path(get_package_share_directory(package)) / 'fairino_hardware.xml'
+            if manifest.exists():
+                names = {e.get('name') for e in ET.parse(manifest).iter('class')}
+                if required & names:
+                    exporters[package] = names
+    if set(exporters) != {hardware['driver_package']} or not required <= exporters.get(hardware['driver_package'], set()):
+        raise RuntimeError('Source exactly one patched fairino_hardware_v3_9_7 exporting '
+                           f'both arm and gripper plugins; found {exporters}. '
+                           'Run scripts/apply_fairino_patches.sh, rebuild and source install/setup.bash.')
     scene = Path(arg('scene')).expanduser().resolve()
     arms = read_yaml(Path(arg('arms')).expanduser())
 
@@ -45,6 +61,8 @@ def start(context):
         'publish_geometry_updates': True,
         'publish_state_updates': True,
         'publish_transforms_updates': True,
+        # SDK gripper speed is configured separately from MoveIt trajectory timing.
+        'trajectory_execution.allowed_goal_duration_margin': 32.0,
     }
     moveit_params['robot_description_semantic'] = ParameterValue(
         moveit_params['robot_description_semantic'], value_type=str)
@@ -114,13 +132,18 @@ def start(context):
     handlers = [
         RegisterEventHandler(OnShutdown(on_shutdown=lambda event, context: temp.cleanup())),
     ]
+    checker = Path(get_package_share_directory('fr3_dual_arm_bringup')) / 'launch/check_real_ready.py'
+    ready = ExecuteProcess(cmd=['/usr/bin/python3', str(checker)] +
+                           (['--require-actions'] if enable_execution else []), output='screen')
     for current, following in zip(spawners, spawners[1:]):
         handlers.append(RegisterEventHandler(OnProcessExit(
             target_action=current,
             on_exit=success([following], 'controller spawner'))))
     handlers.append(RegisterEventHandler(OnProcessExit(
         target_action=spawners[-1],
-        on_exit=success([move_group], 'last controller spawner'))))
+        on_exit=success([ready], 'last controller spawner'))))
+    handlers.append(RegisterEventHandler(OnProcessExit(
+        target_action=ready, on_exit=success([move_group, rviz], 'real feedback/action check'))))
     handlers.append(RegisterEventHandler(OnProcessExit(
         target_action=move_group,
         on_exit=[EmitEvent(event=Shutdown(reason='move_group exited'))])))
@@ -129,7 +152,11 @@ def start(context):
             target_action=manager,
             on_exit=[EmitEvent(event=Shutdown(reason='required manager exited'))])))
 
-    return handlers + [rsp] + managers + [spawners[0], rviz]
+    messages = [LogInfo(msg='FR3 SDK gripper integration v2: expecting 14 measured joints; '
+                            'gripper actions end in /gripper_cmd. Model: ' + str(description_share))]
+    if hardware['gripper']['block'] == 0:
+        messages.append(LogInfo(msg='Legacy gripper.block=0 overridden to SDK non-blocking block=1.'))
+    return handlers + messages + [rsp] + managers + [spawners[0]]
 
 
 def generate_launch_description():

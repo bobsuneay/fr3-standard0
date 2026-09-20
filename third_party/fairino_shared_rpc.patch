@@ -161,11 +161,16 @@
      RCLCPP_ERROR_ONCE(rclcpp::get_logger(kLogger),
        "Failed to read gripper position");
      return hardware_interface::return_type::ERROR;
-@@ -277,6 +286,7 @@
+@@ -277,6 +286,12 @@
    if (!_active || !_ptr_robot) {
      return hardware_interface::return_type::ERROR;
    }
 +  std::lock_guard<std::mutex> sdk_lock(_ptr_robot->mutex);
++  // Reject out-of-range requests instead of silently commanding an endpoint.
++  if (joint_position_command_[0] < 0.0 ||
++      joint_position_command_[0] > _open_gap / 2.0) {
++    return hardware_interface::return_type::ERROR;
++  }
    for (double command : joint_position_command_) {
      if (!std::isfinite(command)) {
        return hardware_interface::return_type::ERROR;

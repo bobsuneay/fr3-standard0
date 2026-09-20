@@ -57,8 +57,6 @@ def validate_hardware(cfg):
             raise ValueError(f'Configure actual {side} gripper_index (robot-attached gripper)')
     if cfg['left']['robot_ip'] == cfg['right']['robot_ip']:
         raise ValueError('Left and right IPs must differ on this host')
-    if cfg['left']['gripper_index'] == cfg['right']['gripper_index']:
-        raise ValueError('Left and right gripper indices must differ')
     g = cfg['gripper']
     for key, low, high in (('vel', 1, 100), ('force', 1, 100),
                            ('maxtime', 1, 30000), ('block', 0, 1),
@@ -158,7 +156,7 @@ def add_gripper(root, side, cfg):
         element(joint, 'child', link=link_name)
         element(joint, 'origin', xyz=f'{sign * 0.01545} 0 .067')
         element(joint, 'axis', xyz=f'{sign} 0 0')
-        element(joint, 'limit', lower=0, upper=0.05, effort=100, velocity=0.10)
+        element(joint, 'limit', lower=0, upper=g['open_gap'] / 2, effort=100, velocity=0.10)
         element(joint, 'dynamics', damping=15.0, friction=0.40)
         if index == 1:
             element(joint, 'mimic', joint=p + 'left_finger_joint', multiplier=1.0, offset=0.0)
@@ -358,7 +356,7 @@ def build_model(share, scene_path, arms, mode='gazebo', controller_file='', hard
             element(surface, 'material').text = 'Gazebo/White'
 
         joints = [f'{side}_j{i}' for i in range(1, 7)]
-        joints += [f'{side}_left_finger_joint', f'{side}_right_finger_joint']
+        joints += [f'{side}_left_finger_joint']
         all_joints.extend(joints)
         for i, value in enumerate(arms[side]['initial'], 1):
             initial[f'{side}_j{i}'] = value
@@ -371,8 +369,16 @@ def build_model(share, scene_path, arms, mode='gazebo', controller_file='', hard
     if mode == 'gazebo':
         # A single GazeboSystem exposes both arms and avoids duplicate
         # ros2_control parameters that Humble complains about with two blocks.
-        control(root, 'gazebo_system', 'gazebo_ros2_control/GazeboSystem',
-                all_joints, initial)
+        system = control(root, 'gazebo_system', 'gazebo_ros2_control/GazeboSystem',
+                         all_joints, initial)
+        for side in SIDES:
+            follower = element(system, 'joint', name=f'{side}_right_finger_joint')
+            element(follower, 'param', name='mimic').text = f'{side}_left_finger_joint'
+            element(follower, 'param', name='multiplier').text = '1'
+            element(follower, 'command_interface', name='position')
+            state = element(follower, 'state_interface', name='position')
+            element(state, 'param', name='initial_value').text = str(arms['gripper']['open_gap'] / 2)
+            element(follower, 'state_interface', name='velocity')
         plugin = element(element(root, 'gazebo'), 'plugin', name='gazebo_ros2_control',
                          filename='libgazebo_ros2_control.so')
         element(plugin, 'robot_param').text = 'robot_description'
@@ -384,7 +390,7 @@ def build_model(share, scene_path, arms, mode='gazebo', controller_file='', hard
             root.remove(gazebo_node)
         for side in SIDES:
             arm_joints = [f'{side}_j{i}' for i in range(1, 7)]
-            finger_joints = [f'{side}_left_finger_joint', f'{side}_right_finger_joint']
+            finger_joints = [f'{side}_left_finger_joint']
             if mode == 'mock':
                 arm_plugin = 'mock_components/GenericSystem'
                 gripper_plugin = 'mock_components/GenericSystem'
@@ -399,6 +405,8 @@ def build_model(share, scene_path, arms, mode='gazebo', controller_file='', hard
                     'robot_ip': hardware[side]['robot_ip'],
                     'gripper_index': hardware[side]['gripper_index'],
                     **hardware['gripper'],
+                    # SDK 0 blocks the shared arm loop; accept old YAML but always send 1.
+                    'block': 1,
                     'open_gap': arms['gripper']['open_gap'],
                     'finger_travel': arms['gripper']['finger_travel'],
                 }
@@ -426,10 +434,9 @@ def semantic(root, arms):
         ready = element(srdf, 'group_state', name='ready', group=side + '_arm')
         for i, v in enumerate(arms[side]['initial'], 1):
             element(ready, 'joint', name=f'{side}_j{i}', value=v)
-        for name, q in (('closed', 0.00025), ('open', arms['gripper']['open_gap'] / 2)):
+        for name, q in (('closed', 0.0), ('open', arms['gripper']['open_gap'] / 2)):
             state = element(srdf, 'group_state', name=name, group=side + '_gripper')
             element(state, 'joint', name=side + '_left_finger_joint', value=q)
-            element(state, 'joint', name=side + '_right_finger_joint', value=q)
         element(srdf, 'disable_collisions', link1=side + '_wrist3_link',
                 link2=side + '_gripper_palm', reason='Mounting')
         element(srdf, 'disable_collisions', link1=side + '_mount_plate',
@@ -476,12 +483,8 @@ def controllers(mode='gazebo', side=None):
     for arm in sides:
         names = (arm + '_joint_state_broadcaster', arm + '_arm_controller',
                  arm + '_gripper_controller')
-        if mode == 'real':
-            gripper_kind = 'position_controllers/GripperActionController'
-            gripper_joints = [f'{arm}_left_finger_joint']
-        else:
-            gripper_kind = 'joint_trajectory_controller/JointTrajectoryController'
-            gripper_joints = [f'{arm}_left_finger_joint', f'{arm}_right_finger_joint']
+        gripper_kind = 'position_controllers/GripperActionController'
+        gripper_joints = [f'{arm}_left_finger_joint']
         for name, kind in zip(names, (
                 'joint_state_broadcaster/JointStateBroadcaster',
                 'joint_trajectory_controller/JointTrajectoryController',
@@ -495,16 +498,10 @@ def controllers(mode='gazebo', side=None):
             'command_interfaces': ['position'], 'state_interfaces': ['position'],
             'allow_partial_joints_goal': False, 'state_publish_rate': 50.0,
             'constraints': {'goal_time': 2.0, 'stopped_velocity_tolerance': 0.05}}}
-        if mode == 'real':
-            result[names[2]] = {'ros__parameters': {
-                'joint': f'{arm}_left_finger_joint', 'goal_tolerance': 0.002,
-                'max_effort': 0.0, 'allow_stalling': True}}
-        else:
-            result[names[2]] = {'ros__parameters': {
-                'joints': gripper_joints,
-                'command_interfaces': ['position'],
-                'state_interfaces': ['position', 'velocity'],
-                'allow_partial_joints_goal': False}}
+        result[names[2]] = {'ros__parameters': {
+            'joint': f'{arm}_left_finger_joint', 'goal_tolerance': 0.0005,
+            'max_effort': 0.0, 'allow_stalling': False,
+            'stall_velocity_threshold': 0.0001, 'stall_timeout': 2.0}}
     return result
 
 
@@ -533,12 +530,7 @@ def moveit_config(root, arms, mode='gazebo'):
             'kinematics_solver': 'kdl_kinematics_plugin/KDLKinematicsPlugin',
             'kinematics_solver_timeout': 0.1,
             'kinematics_solver_search_resolution': 0.005}
-        if mode == 'real':
-            gripper_mapping = ('GripperCommand', 'command', [f'{side}_left_finger_joint'])
-        else:
-            gripper_mapping = (
-                'FollowJointTrajectory', 'follow_joint_trajectory',
-                [f'{side}_left_finger_joint', f'{side}_right_finger_joint'])
+        gripper_mapping = ('GripperCommand', 'gripper_cmd', [f'{side}_left_finger_joint'])
         for suffix, kind, action, joints in (
                 ('arm_controller', 'FollowJointTrajectory', 'follow_joint_trajectory',
                  [f'{side}_j{i}' for i in range(1, 7)]),

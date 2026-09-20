@@ -11,6 +11,7 @@ gripper:
   vel: 50
   force: 50
   maxtime: 30000
-  block: 0
+  # SDK 1 = non-blocking; real launch also normalizes old block: 0 files to 1.
+  block: 1
   open_pos: 0
   closed_pos: 100

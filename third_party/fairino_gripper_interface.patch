@@ -88,7 +88,7 @@ index 0000000..3333333
 +  int _vel = 50;
 +  int _force = 50;
 +  int _maxtime = 30000;
-+  int _block = 0;
++  int _block = 1;
 +  int _open_pos = 0;
 +  int _closed_pos = 100;
 +  double _open_gap = 0.06;
@@ -107,7 +107,7 @@ new file mode 100644
 index 0000000..4444444
 --- /dev/null
 +++ b/fairino_hardware_v3_9_7/src/fairino_gripper_hardware_interface.cpp
-@@ -0,0 +1,336 @@
+@@ -0,0 +1,337 @@
 +#include "fairino_hardware/fairino_gripper_hardware_interface.hpp"
 +
 +#include <algorithm>
@@ -176,9 +176,9 @@ index 0000000..4444444
 +    return hardware_interface::CallbackReturn::ERROR;
 +  }
 +
-+  if (info_.joints.empty() || info_.joints.size() > 2) {
++  if (info_.joints.size() != 1) {
 +    RCLCPP_ERROR(rclcpp::get_logger(kLogger),
-+      "Fairino gripper hardware expects one or two finger joints");
++      "Fairino gripper hardware expects exactly one master finger joint");
 +    return hardware_interface::CallbackReturn::ERROR;
 +  }
 +
@@ -257,6 +257,11 @@ index 0000000..4444444
 +  if (_open_pos == _closed_pos) {
 +    RCLCPP_ERROR(rclcpp::get_logger(kLogger),
 +      "open_pos and closed_pos must differ");
++    return hardware_interface::CallbackReturn::ERROR;
++  }
++  if (_block != 1) {
++    RCLCPP_ERROR(rclcpp::get_logger(kLogger),
++      "block must be 1 (non-blocking) in the arm control loop");
 +    return hardware_interface::CallbackReturn::ERROR;
 +  }
 +  if (_open_gap / 2.0 > _finger_travel) {
@@ -354,7 +359,7 @@ index 0000000..4444444
 +}
 +
 +hardware_interface::return_type FairinoGripperHardwareInterface::read(
-+  const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
++  const rclcpp::Time & /*time*/, const rclcpp::Duration & period)
 +{
 +  if (!_active || !_ptr_robot) {
 +    return hardware_interface::return_type::ERROR;
@@ -370,8 +375,9 @@ index 0000000..4444444
 +
 +  const double position = joint_for_percent(percent);
 +  for (std::size_t i = 0; i < info_.joints.size(); ++i) {
++    const double dt = period.seconds();
++    joint_velocity_state_[i] = dt > 0.0 ? (position - joint_position_state_[i]) / dt : 0.0;
 +    joint_position_state_[i] = position;
-+    joint_velocity_state_[i] = 0.0;
 +  }
 +  return hardware_interface::return_type::OK;
 +}

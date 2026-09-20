@@ -33,14 +33,14 @@ moveit_simple_controller_manager:
 
   left_gripper_controller:
     type: GripperCommand
-    action_ns: gripper_action
+    action_ns: gripper_cmd
     default: true
     joints:
       - left_left_finger_joint
 
   right_gripper_controller:
     type: GripperCommand
-    action_ns: gripper_action
+    action_ns: gripper_cmd
     default: true
     joints:
       - right_left_finger_joint

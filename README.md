@@ -1,5 +1,9 @@
 # FR3 双臂抓取与检测部署工作区
 
+**实机更新与 RViz 操作请看 [双臂和 mimic 夹爪使用说明](docs/REAL_MOVEIT_USAGE.md)。**
+当前 `real.launch.py` 使用真实 SDK 夹爪插件，启动前校验 14 个关节反馈和执行端点。
+夹爪 action 为 `/<side>_gripper_controller/gripper_cmd`。必须应用厂商补丁并重新编译。
+
 这是一个从 `fr3-sim5` 中 **`fr3_bolt_inspection_cell`** 提炼出来的新 ROS 2 工作区骨架。
 
 目标不是把原来的 `fr3_dual_bolt_cell` / `fr3_bolt_inspection_cell` 整个复制过来，而是把它的真实场景参数、双臂模型、点云识别、定点抓取、检测与交接能力，按主流的 ROS 2 分层结构重新组织。
